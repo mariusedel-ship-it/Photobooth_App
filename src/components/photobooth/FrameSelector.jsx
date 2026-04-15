@@ -194,7 +194,7 @@ export default function FrameSelector({ selectedFrame, onSelect, onBack, onConti
               {/* Inner photo area with preview image */}
               <div className="absolute inset-3 md:inset-4 bg-zinc-800 rounded-lg overflow-hidden">
                 <img 
-                  src="/beautiful-woman-in-new-york.jpg"
+                  src="/Woman_stock.webp"
                   alt="Vorschau"
                   className="w-full h-full object-cover"
                   style={{ filter: getFilterCSS(frame.filter) }}

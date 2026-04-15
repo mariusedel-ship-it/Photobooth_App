@@ -20,7 +20,7 @@ export default function HeroSection({ onStart, onUpload }) {
         className="relative z-10 w-full max-w-[180px] lg:max-w-[200px] shrink-0 order-2 lg:order-1"
       >
         <img 
-          src="/Ergebnis.png"
+          src="/Ergebnis.webp"
           alt="Photobooth Beispiel"
           className="w-full rounded-2xl shadow-2xl shadow-black/50"
         />
