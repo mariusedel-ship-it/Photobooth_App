@@ -1,0 +1,31 @@
+{
+  "name": "PhotoSession",
+  "type": "object",
+  "properties": {
+    "event_name": {
+      "type": "string",
+      "description": "Name des Events"
+    },
+    "photo_url": {
+      "type": "string",
+      "description": "URL des aufgenommenen Fotos"
+    },
+    "frame_id": {
+      "type": "string",
+      "description": "ID des verwendeten Frames"
+    },
+    "final_image_url": {
+      "type": "string",
+      "description": "URL des finalen Bildes mit Frame"
+    },
+    "email": {
+      "type": "string",
+      "description": "E-Mail f\u00fcr Versand (optional)"
+    },
+    "downloaded": {
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "required": []
+}
