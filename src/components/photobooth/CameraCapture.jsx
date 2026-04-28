@@ -9,6 +9,73 @@ import { getFilterCSS, FILM_GRAIN_FILTERS } from './filterConfig';
 
 const TOTAL_PHOTOS = 4;
 
+// iOS Safari does not support the Canvas 2D ctx.filter API.
+// This function replicates the CSS filter effects via pixel manipulation so
+// filters work on all mobile browsers. Only called once per captured frame
+// (not per animation frame), so performance is fine.
+const applyPixelFilter = (ctx, width, height, filterName) => {
+  if (!filterName || filterName === 'none') return;
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const d = imageData.data;
+
+  for (let i = 0; i < d.length; i += 4) {
+    let r = d[i], g = d[i + 1], b = d[i + 2];
+
+    if (filterName === 'bw-filter') {
+      // grayscale(1) brightness(0.5) contrast(1.1)
+      const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+      r = g = b = gray * 0.5;
+      r = (r - 128) * 1.1 + 128;
+      g = (g - 128) * 1.1 + 128;
+      b = (b - 128) * 1.1 + 128;
+    } else if (filterName === 'vintage-polaroid') {
+      // brightness(0.76) contrast(1.28) saturate(0.76) sepia(0.15)
+      r *= 0.76; g *= 0.76; b *= 0.76;
+      r = (r - 128) * 1.28 + 128;
+      g = (g - 128) * 1.28 + 128;
+      b = (b - 128) * 1.28 + 128;
+      const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      r = lum + 0.76 * (r - lum);
+      g = lum + 0.76 * (g - lum);
+      b = lum + 0.76 * (b - lum);
+      const rS = r * 0.393 + g * 0.769 + b * 0.189;
+      const gS = r * 0.349 + g * 0.686 + b * 0.168;
+      const bS = r * 0.272 + g * 0.534 + b * 0.131;
+      r += 0.15 * (rS - r); g += 0.15 * (gS - g); b += 0.15 * (bS - b);
+    } else if (filterName === 'old-money') {
+      // brightness(0.55) contrast(0.7) saturate(0.85) sepia(0.2)
+      r *= 0.55; g *= 0.55; b *= 0.55;
+      r = (r - 128) * 0.7 + 128;
+      g = (g - 128) * 0.7 + 128;
+      b = (b - 128) * 0.7 + 128;
+      const lum2 = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      r = lum2 + 0.85 * (r - lum2);
+      g = lum2 + 0.85 * (g - lum2);
+      b = lum2 + 0.85 * (b - lum2);
+      const rS2 = r * 0.393 + g * 0.769 + b * 0.189;
+      const gS2 = r * 0.349 + g * 0.686 + b * 0.168;
+      const bS2 = r * 0.272 + g * 0.534 + b * 0.131;
+      r += 0.2 * (rS2 - r); g += 0.2 * (gS2 - g); b += 0.2 * (bS2 - b);
+    } else if (filterName === 'dark-soul') {
+      // brightness(0.47) saturate(0.62) contrast(0.69)
+      r *= 0.47; g *= 0.47; b *= 0.47;
+      const lum3 = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      r = lum3 + 0.62 * (r - lum3);
+      g = lum3 + 0.62 * (g - lum3);
+      b = lum3 + 0.62 * (b - lum3);
+      r = (r - 128) * 0.69 + 128;
+      g = (g - 128) * 0.69 + 128;
+      b = (b - 128) * 0.69 + 128;
+    }
+
+    d[i]     = Math.max(0, Math.min(255, Math.round(r)));
+    d[i + 1] = Math.max(0, Math.min(255, Math.round(g)));
+    d[i + 2] = Math.max(0, Math.min(255, Math.round(b)));
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+};
+
 export default function CameraCapture({ selectedFrame, onCapture, onBack }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -49,6 +116,24 @@ export default function CameraCapture({ selectedFrame, onCapture, onBack }) {
     }
   }, []);
 
+  // Activate/deactivate the device torch (flashlight) via the MediaDevices API.
+  // Only works on Android Chrome with the rear camera – silently ignored elsewhere.
+  const activateTorch = useCallback(async (active) => {
+    if (!streamRef.current) return;
+    const videoTrack = streamRef.current.getVideoTracks()[0];
+    if (!videoTrack) return;
+    // getCapabilities() is not available on all browsers
+    const capabilities = videoTrack.getCapabilities?.();
+    if (capabilities?.torch) {
+      try {
+        await videoTrack.applyConstraints({ advanced: [{ torch: active }] });
+      } catch (e) {
+        // Silently ignore – torch might be in use by another app or not supported
+        console.warn('Torch not available:', e);
+      }
+    }
+  }, []);
+
   // startPreviewLoop uses refs instead of closure values so it never goes stale.
   // No state dependencies needed → stable function reference across re-renders.
   // Defined BEFORE startCamera so startCamera can safely include it in its deps.
@@ -82,17 +167,12 @@ export default function CameraCapture({ selectedFrame, onCapture, onBack }) {
         ctx.scale(-1, 1);
       }
 
-      // Apply CSS filter via canvas filter API
-      if (currentFrame?.filter) {
-        ctx.filter = getFilterCSS(currentFrame.filter);
-      } else {
-        ctx.filter = 'none';
-      }
-
       ctx.drawImage(video, 0, 0);
 
-      // Reset filter before drawing overlays to avoid cascading
-      ctx.filter = 'none';
+      // ctx.filter is NOT supported on iOS Safari → apply filter as CSS style
+      // on the canvas element itself. This is GPU-accelerated and works everywhere.
+      const newFilter = currentFrame?.filter ? getFilterCSS(currentFrame.filter) : 'none';
+      if (canvas.style.filter !== newFilter) canvas.style.filter = newFilter;
 
       if (currentFrame?.filter) {
         if (currentFrame.filter === 'vintage-polaroid') {
@@ -217,8 +297,10 @@ export default function CameraCapture({ selectedFrame, onCapture, onBack }) {
       finalCanvas.height = previewCanvas.height;
       const ctx = finalCanvas.getContext('2d');
 
-      // Draw the filtered image
+      // previewCanvas pixel data is NOT filtered (CSS style.filter is visual only).
+      // Apply the filter via pixel manipulation so it's baked into the saved image.
       ctx.drawImage(previewCanvas, 0, 0);
+      applyPixelFilter(ctx, finalCanvas.width, finalCanvas.height, selectedFrame?.filter);
 
       // Generate film grain exactly like FilmGrainOverlay does
       const grainCanvas = document.createElement('canvas');
@@ -285,6 +367,17 @@ export default function CameraCapture({ selectedFrame, onCapture, onBack }) {
       return finalCanvas.toDataURL('image/jpeg', 0.9);
     }
 
+    // No film grain, but still need to bake in the pixel filter
+    if (selectedFrame?.filter) {
+      const filteredCanvas = document.createElement('canvas');
+      filteredCanvas.width = previewCanvas.width;
+      filteredCanvas.height = previewCanvas.height;
+      const fCtx = filteredCanvas.getContext('2d');
+      fCtx.drawImage(previewCanvas, 0, 0);
+      applyPixelFilter(fCtx, filteredCanvas.width, filteredCanvas.height, selectedFrame.filter);
+      return filteredCanvas.toDataURL('image/jpeg', 0.9);
+    }
+
     return previewCanvas.toDataURL('image/jpeg', 0.9);
   };
 
@@ -302,17 +395,32 @@ export default function CameraCapture({ selectedFrame, onCapture, onBack }) {
       
       // Flash effect
       if (flashEnabled) {
-        setShowFlash(true);
+        // Rear camera: activate real device torch if supported (Android Chrome)
+        // Front camera: white-screen flash illuminates the face instead
+        const isRearCamera = facingModeRef.current === 'environment';
+        if (isRearCamera) {
+          await activateTorch(true);
+          await new Promise(resolve => setTimeout(resolve, 80)); // brief torch warm-up
+        } else {
+          setShowFlash(true);
+        }
         await new Promise(resolve => setTimeout(resolve, 200));
       }
-      
+
       // Capture
       const imageData = capturePhoto();
       if (imageData) {
         images.push(imageData);
         setCapturedImages(images);
       }
-      
+
+      // Turn off flash/torch
+      if (flashEnabled) {
+        const isRearCamera = facingModeRef.current === 'environment';
+        if (isRearCamera) {
+          activateTorch(false); // fire-and-forget
+        }
+      }
       setShowFlash(false);
       
       // Small pause between photos
@@ -352,10 +460,16 @@ export default function CameraCapture({ selectedFrame, onCapture, onBack }) {
     
     // Flash effect
     if (flashEnabled) {
-      setShowFlash(true);
+      const isRearCamera = facingModeRef.current === 'environment';
+      if (isRearCamera) {
+        await activateTorch(true);
+        await new Promise(resolve => setTimeout(resolve, 80));
+      } else {
+        setShowFlash(true);
+      }
       await new Promise(resolve => setTimeout(resolve, 200));
     }
-    
+
     const imageData = capturePhoto();
     if (imageData) {
       setCapturedImages(prev => {
@@ -364,7 +478,10 @@ export default function CameraCapture({ selectedFrame, onCapture, onBack }) {
         return newImages;
       });
     }
-    
+
+    if (flashEnabled && facingModeRef.current === 'environment') {
+      activateTorch(false);
+    }
     setShowFlash(false);
   };
 
