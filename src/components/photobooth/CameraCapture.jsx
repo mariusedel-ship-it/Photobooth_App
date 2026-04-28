@@ -25,6 +25,16 @@ export default function CameraCapture({ selectedFrame, onCapture, onBack }) {
   const [showFlash, setShowFlash] = useState(false);
   const [flashEnabled, setFlashEnabled] = useState(true);
 
+  // Refs so the animation loop always reads the current values without needing
+  // to be restarted whenever selectedFrame or facingMode changes.
+  const facingModeRef = useRef('user');
+  const selectedFrameRef = useRef(selectedFrame);
+
+  // Keep selectedFrameRef in sync with the prop
+  useEffect(() => {
+    selectedFrameRef.current = selectedFrame;
+  }, [selectedFrame]);
+
   const stopCamera = useCallback(() => {
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
@@ -39,65 +49,9 @@ export default function CameraCapture({ selectedFrame, onCapture, onBack }) {
     }
   }, []);
 
-  const startCamera = useCallback(async (mode) => {
-    setIsLoading(true);
-    setError(null);
-    setCameraReady(false);
-    
-    // Stop existing stream first
-    stopCamera();
-
-    try {
-      const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: { 
-          facingMode: mode,
-          width: { ideal: 960 },
-          height: { ideal: 1280 },
-        },
-        audio: false,
-      });
-      
-      streamRef.current = mediaStream;
-      
-      if (videoRef.current) {
-        const video = videoRef.current;
-        video.srcObject = mediaStream;
-        
-        // Wait for loadedmetadata then play
-        video.onloadedmetadata = async () => {
-          try {
-            await video.play();
-            setCameraReady(true);
-            setIsLoading(false);
-            startPreviewLoop();
-          } catch (playError) {
-            console.error('Play error:', playError);
-            // Try again without await
-            video.play();
-            setCameraReady(true);
-            setIsLoading(false);
-            startPreviewLoop();
-          }
-        };
-        
-        // Also try to play directly as fallback
-        video.load();
-      }
-    } catch (err) {
-      console.error('Camera error:', err);
-      if (err.name === 'NotAllowedError') {
-        setError('Kamerazugriff wurde verweigert. Bitte erlaube den Zugriff in deinen Browser-Einstellungen.');
-      } else if (err.name === 'NotFoundError') {
-        setError('Keine Kamera gefunden. Bitte schließe eine Kamera an.');
-      } else {
-        setError('Kamera konnte nicht gestartet werden. Bitte erlaube den Kamerazugriff.');
-      }
-      setIsLoading(false);
-    }
-  }, [stopCamera]);
-
-
-
+  // startPreviewLoop uses refs instead of closure values so it never goes stale.
+  // No state dependencies needed → stable function reference across re-renders.
+  // Defined BEFORE startCamera so startCamera can safely include it in its deps.
   const startPreviewLoop = useCallback(() => {
     const video = videoRef.current;
     const canvas = previewCanvasRef.current;
@@ -115,27 +69,33 @@ export default function CameraCapture({ selectedFrame, onCapture, onBack }) {
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
 
+      // Always read from refs so filter/mirror changes take effect immediately
+      // without needing to restart the loop.
+      const currentFacingMode = facingModeRef.current;
+      const currentFrame = selectedFrameRef.current;
+
       ctx.setTransform(1, 0, 0, 1, 0, 0);
 
-      if (facingMode === 'user') {
+      // Mirror the preview for the front (selfie) camera
+      if (currentFacingMode === 'user') {
         ctx.translate(canvas.width, 0);
         ctx.scale(-1, 1);
       }
 
       // Apply CSS filter via canvas filter API
-      if (selectedFrame?.filter) {
-        ctx.filter = getFilterCSS(selectedFrame.filter);
+      if (currentFrame?.filter) {
+        ctx.filter = getFilterCSS(currentFrame.filter);
       } else {
         ctx.filter = 'none';
       }
 
       ctx.drawImage(video, 0, 0);
 
-      // Reset filter for overlays
+      // Reset filter before drawing overlays to avoid cascading
       ctx.filter = 'none';
 
-      if (selectedFrame?.filter) {
-        if (selectedFrame.filter === 'vintage-polaroid') {
+      if (currentFrame?.filter) {
+        if (currentFrame.filter === 'vintage-polaroid') {
           // Vignette
           const vignetteGradient = ctx.createRadialGradient(
             canvas.width / 2, canvas.height / 2, canvas.width * 0.2,
@@ -145,8 +105,7 @@ export default function CameraCapture({ selectedFrame, onCapture, onBack }) {
           vignetteGradient.addColorStop(1, 'rgba(0,0,0,0.51)');
           ctx.fillStyle = vignetteGradient;
           ctx.fillRect(0, 0, canvas.width, canvas.height);
-        }
-        else if (selectedFrame.filter === 'dark-soul') {
+        } else if (currentFrame.filter === 'dark-soul') {
           const vignetteGradient = ctx.createRadialGradient(
             canvas.width / 2, canvas.height / 2, canvas.width * 0.3,
             canvas.width / 2, canvas.height / 2, canvas.width * 0.7
@@ -162,7 +121,64 @@ export default function CameraCapture({ selectedFrame, onCapture, onBack }) {
     };
 
     drawFrame();
-  }, [facingMode, selectedFrame, getFilterCSS]);
+  }, []); // Empty deps – reads live values from refs, never goes stale
+
+  const startCamera = useCallback(async (mode) => {
+    setIsLoading(true);
+    setError(null);
+    setCameraReady(false);
+
+    // Stop existing stream first
+    stopCamera();
+
+    try {
+      const mediaStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: mode,
+          width: { ideal: 960 },
+          height: { ideal: 1280 },
+        },
+        audio: false,
+      });
+
+      streamRef.current = mediaStream;
+
+      if (videoRef.current) {
+        const video = videoRef.current;
+        video.srcObject = mediaStream;
+
+        // Wait for loadedmetadata then play
+        video.onloadedmetadata = async () => {
+          try {
+            await video.play();
+            setCameraReady(true);
+            setIsLoading(false);
+            startPreviewLoop();
+          } catch (playError) {
+            console.error('Play error:', playError);
+            // Try again without await
+            video.play();
+            setCameraReady(true);
+            setIsLoading(false);
+            startPreviewLoop();
+          }
+        };
+
+        // Also try to play directly as fallback
+        video.load();
+      }
+    } catch (err) {
+      console.error('Camera error:', err);
+      if (err.name === 'NotAllowedError') {
+        setError('Kamerazugriff wurde verweigert. Bitte erlaube den Zugriff in deinen Browser-Einstellungen.');
+      } else if (err.name === 'NotFoundError') {
+        setError('Keine Kamera gefunden. Bitte schließe eine Kamera an.');
+      } else {
+        setError('Kamera konnte nicht gestartet werden. Bitte erlaube den Kamerazugriff.');
+      }
+      setIsLoading(false);
+    }
+  }, [stopCamera, startPreviewLoop]);
 
   useEffect(() => {
     startCamera(facingMode);
@@ -174,6 +190,9 @@ export default function CameraCapture({ selectedFrame, onCapture, onBack }) {
 
   const switchCamera = () => {
     const newMode = facingMode === 'user' ? 'environment' : 'user';
+    // Update ref synchronously BEFORE startCamera so the new preview loop
+    // immediately reads the correct facing mode (state update is async).
+    facingModeRef.current = newMode;
     setFacingMode(newMode);
     startCamera(newMode);
   };
